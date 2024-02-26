@@ -7,9 +7,10 @@ ENV GENIE_BASE=/usr/local/GENIE
 ENV GENIE=$GENIE_BASE/Generator
 ENV GENIE_REWEIGHT=$GENIE_BASE/Reweight
 
-ENV PYTHIA6_LIBRARY=/usr/pythia6
+ENV PYTHIA6_LIB=/usr/local/pythia6/lib
 ENV ROOTSYS=/usr/local/root
-#ENV LANG=C.UTF-8
+
+ENV LANG=C.UTF-8
 
 COPY packages packages
 
@@ -24,7 +25,7 @@ RUN apt-get update -qq && \
     apt-get clean all &&\
     python3 -m pip install --upgrade pip &&\
     python3 -m pip install --upgrade --no-cache-dir cmake
-#RUN yes | unminimize
+RUN yes | unminimize
 
 ###############################################################################
 # PYTHIA6
@@ -55,7 +56,7 @@ SHELL ["/bin/bash", "-c"]
 WORKDIR /tmp
 RUN export PYTHIA_VERSION_INTEGER=$(awk '{print $1*1000}' <<< ${PYTHIA_VERSION} )  &&\
     export PREVIOUS_PYTHIA_VERSION_INTEGER=$(awk '{print $1*1000}' <<< ${PREVIOUS_PYTHIA_VERSION} )  &&\
-    wget https://root.cern.ch/download/pythia${PYTHIA_MAJOR_VERSION}.tar.gz -O pythia6.tar.gz &&\
+    wget https://root.cern.ch/download/pythia${PYTHIA_MAJOR_VERSION}.tar.gz -q -O pythia6.tar.gz &&\
     mkdir src && \
     tar xf pythia6.tar.gz --strip-components=1 --directory src && \
     wget --no-check-certificate https://pythia.org/download/pythia${PYTHIA_MAJOR_VERSION}/pythia${PYTHIA_VERSION_INTEGER}.f &&\
@@ -64,47 +65,45 @@ RUN export PYTHIA_VERSION_INTEGER=$(awk '{print $1*1000}' <<< ${PYTHIA_VERSION} 
     sed -i 's/int py/extern int py/g' pythia${PYTHIA_MAJOR_VERSION}_common_address.c && \
     sed -i 's/extern int pyuppr/int pyuppr/g' pythia${PYTHIA_MAJOR_VERSION}_common_address.c && \
     sed -i 's/char py/extern char py/g' pythia${PYTHIA_MAJOR_VERSION}_common_address.c && \
+    gfortran -c -fPIC -shared pythia*.f && \
+    gfortran -c -fPIC -shared -fno-second-underscore tpythia${PYTHIA_MAJOR_VERSION}_called_from_cc.F && \
     echo 'void MAIN__() {}' >main.c && \
     gcc -c -fPIC -shared main.c -lgfortran && \
     gcc -c -fPIC -shared pythia${PYTHIA_MAJOR_VERSION}_common_address.c -lgfortran && \
-    gfortran -c -fPIC -shared pythia*.f && \
-    gfortran -c -fPIC -shared -fno-second-underscore tpythia${PYTHIA_MAJOR_VERSION}_called_from_cc.F && \
     gfortran -shared -Wl,-soname,libPythia${PYTHIA_MAJOR_VERSION}.so -o libPythia${PYTHIA_MAJOR_VERSION}.so main.o  pythia*.o tpythia*.o && \
-    mkdir -p $PYTHIA6_LIBRARY && cp -r * $PYTHIA6_LIBRARY/ && \
-    cd ../ && rm -rf src && \
-    echo "${PYTHIA6_LIBRARY}/" > /etc/ld.so.conf.d/pythia${PYTHIA_MAJOR_VERSION}.conf
-
-SHELL ["/bin/sh", "-c"] 
+    mkdir -p $PYTHIA6_LIB && cp -r *.o $PYTHIA6_LIB/ && cp -r *.so $PYTHIA6_LIB/ && \
+    cd ../ && rm -rf src *.tar.gz && \
+    echo "${PYTHIA6_LIB}/" > /etc/ld.so.conf.d/pythia${PYTHIA_MAJOR_VERSION}.conf
 
 # LHAPDF
 LABEL lhapdf.version="6.5.4"
 WORKDIR /tmp
 RUN mkdir src &&\
-    wget https://lhapdf.hepforge.org/downloads/?f=LHAPDF-6.5.4.tar.gz -O lhapdf.tar.gz && \
+    wget https://lhapdf.hepforge.org/downloads/?f=LHAPDF-6.5.4.tar.gz -q -O lhapdf.tar.gz && \
     tar xf lhapdf.tar.gz --strip-components=1 --directory src && \
     cd src &&\
-    ./configure --disable-python --prefix=/usr &&\
+    ./configure --disable-python --prefix=/usr/local &&\
     make -j$NPROC install &&\
     cd ../ &&\
-    rm -rf src
+    rm -rf src *.tar.gz
 
 # PYTHIA8
 LABEL pythia.version="8.310"
 WORKDIR /tmp
 RUN mkdir src && \
-    wget https://pythia.org/download/pythia83/pythia8310.tgz -O pythia8.tar.gz && \
+    wget https://pythia.org/download/pythia83/pythia8310.tgz -q -O pythia8.tar.gz && \
     tar xf pythia8.tar.gz --strip-components=1 --directory src && \
     cd src &&\
-    ./configure --with-lhapdf6 --prefix=/usr &&\
+    ./configure --with-lhapdf6 --prefix=/usr/local &&\
     make -j$NPROC install &&\
     cd ../ &&\
-    rm -rf src
+    rm -rf src *.tar.gz
 
 ENV ROOT_VERSION="6.30.04"
 LABEL root.version=${ROOT_VERSION}
 WORKDIR /tmp
 RUN mkdir src &&\
-    wget https://root.cern/download/root_v${ROOT_VERSION}.source.tar.gz -O root.tar.gz && \
+    wget https://root.cern/download/root_v${ROOT_VERSION}.source.tar.gz -q -O root.tar.gz && \
     tar xf root.tar.gz --strip-components=1 --directory src && \
     cmake \
       -DCMAKE_BUILD_TYPE=Release \
@@ -121,15 +120,12 @@ RUN mkdir src &&\
       -Dmathmore=ON \   
       -Dpythia8=ON \    
       -Dpythia6=ON \    
-      -DPYTHIA6_LIBRARY=/usr/pythia6/libPythia6.so \
+      -DPYTHIA6_LIBRARY=$PYTHIA6_LIB/libPythia6.so \
       -B build \
       -S src \
     && cmake --build build --target install -j$NPROC &&\
-    rm -rf build src &&\
-    ldconfig
-
-RUN apt-get update -qq && \
-    apt-get install -y protobuf-compiler 
+    rm -rf build src *.tar.gz &&\
+    source $ROOTSYS/bin/thisroot.sh
 
 WORKDIR /tmp
 RUN mkdir src && \
@@ -137,7 +133,7 @@ RUN mkdir src && \
     tar xf hepmc3.tar.gz --strip-components=1 --directory src && \
     mkdir build && cd build && \
     cmake \
-#      -DCMAKE_INSTALL_PREFIX=/usr/lib \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
       -DHEPMC3_ENABLE_ROOTIO:BOOL=ON \
       -DHEPMC3_ENABLE_PROTOBUFIO:BOOL=ON \
       -DHEPMC3_ENABLE_TEST:BOOL=OFF \
@@ -155,14 +151,11 @@ LABEL genie.version=3.04.00
 ENV GENIE_VERSION=3_04_00
 LABEL genie.version=${GENIE_VERSION}
 
-SHELL ["/bin/bash", "-c"]
-
 WORKDIR /tmp
-RUN source $ROOTSYS/bin/thisroot.sh && \
-    mkdir -p ${GENIE} &&\
+RUN mkdir -p ${GENIE} &&\
+    source $ROOTSYS/bin/thisroot.sh && \
     export ENV GENIE_GET_VERSION="$(sed 's,\.,_,g' <<< $GENIE_VERSION )" &&\ 
 #    wget https://github.com/GENIE-MC/Generator/archive/refs/tags/R-${GENIE_GET_VERSION}.tar.gz -O genie.tar.gz && \
-#    wget https://github.com/wesketchum/Generator/tarball/master -q -O genie.tar.gz && \
     wget https://github.com/wesketchum/Generator/tarball/hepmc -q -O genie.tar.gz && \
     tar xf genie.tar.gz --strip-components=1 --directory ${GENIE} &&\
     cd ${GENIE} &&\
@@ -172,17 +165,18 @@ RUN source $ROOTSYS/bin/thisroot.sh && \
       --enable-gfortran \
       --with-gfortran-lib=/usr/x86_64-linux-gnu/ \
       --enable-pythia8 \
-      --with-pythia8-lib=/usr/lib \
+      --with-pythia8-lib=/usr/local/lib \
       --enable-test \
       --enable-hepmc3 \
       --with-hepmc3-lib=/usr/local/lib \
       --with-hepmc3-inc=/usr/local/include \
     && \
     make -j$NPROC && \
-    make -j$NPROC install
-
-#SHELL ["/bin/sh", "-c"] 
+    make -j$NPROC install && \
+    rm /tmp/*.tar.gz
 
 WORKDIR /home
 
-CMD ["/bin/bash"]
+COPY entry.sh /etc/entry.sh 
+RUN chmod 755 /etc/entry.sh
+ENTRYPOINT ["/etc/entry.sh"]
